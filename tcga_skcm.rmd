@@ -16,19 +16,10 @@ output:
 
 More details on this object type can be seen [here](https://bioconductor.org/packages/devel/bioc/vignettes/SummarizedExperiment/inst/doc/SummarizedExperiment.html)
 
-library(ggplot2)
-library(tidyverse)
 
 ## RNAseq data
 
 ```{r, eval = F}
-
-## Install TCGA if you don't have it (restart session after installing)
-
-# if (!require("BiocManager", quietly = TRUE))
-#     install.packages("BiocManager")
-# 
-# BiocManager::install("TCGAbiolinks")
 
 library(TCGAbiolinks)
 library(SummarizedExperiment)
