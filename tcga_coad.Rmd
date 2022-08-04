@@ -359,9 +359,9 @@ merged_finalc <- full_join(merged_leukc, ciber_coad, by="patient")
 
 #Cleaning merged_final from NAs 
 ```{r}
-final <- merged_final
+finalc <- merged_finalc
 
-final <- na.omit(final)
+finalc <- na.omit(finalc)
 
 ```
 
