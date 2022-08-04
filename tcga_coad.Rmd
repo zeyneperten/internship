@@ -1,0 +1,426 @@
+---
+title: "coad_tcga"
+author: "zeynep"
+date: '2022-07-26'
+output: html_document
+---
+
+#Download Data
+## RNAseq data
+
+```{r, eval = F}
+
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+# Gene expression aligned against hg38
+query.crna <- GDCquery(
+  project = "TCGA-COAD",
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification", 
+  workflow.type = "STAR - Counts")
+
+
+GDCdownload(query = query.crna)
+
+coad_rna <- GDCprepare(query = query.crna)
+
+saveRDS(coad_rna, "coad_rna.rds")
+
+```
+
+
+## miRNAseq data
+
+```{r, eval=F}
+
+query.cmirna <- GDCquery(
+  project = "TCGA-COAD",
+  data.category = "Transcriptome Profiling",
+  data.type = "miRNA Expression Quantification")
+
+
+GDCdownload(query = query.cmirna)
+
+coad_mir <- GDCprepare(query = query.cmirna)
+
+saveRDS(coad_mir, "coad_mir.rds")
+
+
+```
+
+## Subtype information
+
+```{r, eval=F}
+
+coad_subtype <- TCGAquery_subtype("COAD")
+
+saveRDS(coad_subtype, "coad_subtype.rds")
+
+```
+
+
+# Explore data
+
+##RNAseq extract
+
+```{r}
+
+coad_rna <- readRDS("coad_rna.rds")
+
+
+# Extract RNAseq data
+c_rna <- assay(coad_rna)
+
+
+```
+
+
+##Gene info
+```{r}
+
+library(tidyverse)
+
+cgene_data <- as.data.frame(rowData(coad_rna))
+
+anyDuplicated(cgene_data$gene_id) #0 means, they are unique observations
+
+anyDuplicated(cgene_data$gene_name) 
+
+sum(duplicated(cgene_data$gene_name)) #total duplication
+
+cdup_genes <- duplicated(cgene_data$gene_name)| duplicated(cgene_data$gene_name, fromLast=F)
+
+
+# Use this information for gene renaming
+
+
+```
+
+###Duplications
+```{r}
+
+# dealing with duplicate gene ids
+
+cgene_data <- cgene_data %>% 
+  mutate(duplicated_name = duplicated(gene_name) | duplicated(gene_name, fromLast=T)) %>% 
+  mutate(new_name = case_when(
+    duplicated_name == TRUE ~ paste(gene_name, gene_id, sep = "_"),
+    duplicated_name == FALSE ~ gene_name,
+    TRUE ~ "XXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  )) %>% 
+  mutate(new_name = make.names(new_name)) #R friendly syntax
+
+```
+
+
+##Patient data extraction
+```{r}
+
+cpatient_data <- as.data.frame(colData(coad_rna))
+
+anyDuplicated(cpatient_data$patient)
+
+which(duplicated(cpatient_data$patient))
+
+which(duplicated(cpatient_data$patient) | duplicated(cpatient_data$patient, fromLast=T))
+
+dup_patients <- which(duplicated(cpatient_data$patient) | duplicated(cpatient_data$patient, fromLast=T))
+
+
+```
+
+
+##Normalization
+
+###miRNA
+```{r}
+
+
+head(colnames(coad_mir))
+
+#select columns that contain "per million", value=T gives values
+sel_cols <- c(grep(pattern = "reads_per_million",
+                   x = colnames(coad_mir), 
+                   ignore.case = T, value = T))
+
+
+head(sel_cols)
+
+
+goodmir <- coad_mir[, sel_cols]
+
+#make linear values logarithmic by apply function. margin indicates if it is for col or row.
+
+goodmir <- apply(goodmir, MARGIN = 2, FUN = function(x){log(x+1,base = 10)})
+
+dim(coad_mir)
+
+dim(goodmir) #only 465 per million data
+
+#miRNA names are lost in goodmir
+
+#to get rid of a specific string
+colnames(goodmir) <- gsub(pattern = "reads_per_million_miRNA_mapped_",
+                          replacement = "",
+                          x = colnames(goodmir))
+
+#transform
+ct_mir <- goodmir %>% 
+  t() %>% 
+  as.data.frame()
+
+#give names to columns
+colnames(ct_mir) <- make.names(coad_mir$miRNA_ID)
+
+
+ct_mir <- ct_mir %>% 
+  mutate(sample_ID = substr(rownames(.),1,16)) %>% 
+  select(sample_ID, everything())
+
+
+```
+
+###RNA normalization
+```{r}
+library(dplyr)
+normal_rna <- edgeR::cpm(c_rna) 
+#count per million, normalization
+
+normal_rna <- log(normal_rna+1, base = 10)
+identical(rownames(normal_rna), cgene_data$gene_id)
+
+rownames(normal_rna) <- cgene_data$new_name
+
+```
+
+
+### RNA transformation & adding immune signature to transformed RNA data frame 
+```{r}
+#move sample ids from cols to rows
+ct_rna <- data.frame(t(normal_rna))
+
+#calculate average immune signature of specific genes
+immune <- c("CD8A", "CD3E", "GZMB", "PRF1")
+
+immune_sign <- rowMeans(select(ct_rna, immune))
+
+ct_rna <- ct_rna %>% 
+  mutate(immune_signature = immune_sign) %>% 
+  select(immune_signature, everything())
+
+# extract patient barcode and add as a column, barcode is first 12 of id
+
+ct_rna <- ct_rna %>% 
+  mutate(sample_ID = substr(rownames(.), 1,16 )) %>% 
+  select(sample_ID, everything())
+ 
+```
+
+
+###Survival
+```{r}
+clinicalc <- cpatient_data[c("patient", "vital_status", "days_to_death", "days_to_last_follow_up")]
+
+#a new boolean varaible created 
+clinicalc$deceased = clinicalc$vital_status == "Dead"
+
+#a variable that shows overall survival. if the person is dead, it is equal to days_to_death, if alive, gives days_to_last_follow_up
+clinicalc$overall_survival = ifelse(clinicalc$deceased,
+                                   clinicalc$days_to_death,
+                                   clinicalc$days_to_last_follow_up)
+
+#add immune_signature varaible to a new clinical data frame
+clin_immunec <- clinicalc %>% 
+  mutate(immune_signature = ct_rna$immune_signature)
+
+#Calculating median of immune signature
+med_immunec <- median(ct_rna$immune_signature)
+
+#classify whether the immune signature is lower or higher than the median
+clin_immunec <- clin_immunec %>% 
+  mutate(immune_median = case_when(
+    immune_signature <= med_immunec ~ "Low",
+    immune_signature > med_immunec ~ "High"
+  ))
+
+```
+
+
+#Human-readable metadata
+
+```{r, EVAL=f}
+
+#Getting rid of NA in subtype data
+
+for (i in 1:45) {
+  levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "-")] <- "Not Available"
+  levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "[Not Available]")] <- "Not Available"
+  levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "[Not Applicable]")] <- "Not Available"
+  levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "n/a")] <- "Not Available"
+  levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "NA")] <- "Not Available"
+  
+  
+  levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "wt")] <- "Wildtype"
+  levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "WT")] <- "Wildtype"
+
+}
+
+
+#Getting rid of NA in patient data
+#There is an error with NAs
+
+cpat <- cpatient_data
+
+for (i in 1:107) {
+  if (is.factor(cpat[,i])) {
+    levels(cpat[,i])[which(levels(cpat[,i]) == "-")] <- "Not Available"
+    levels(cpat[,i])[which(levels(cpat[,i]) == "n/a")] <- "Not Available"
+    
+    levels(cpat[,i])[which(levels(cpat[,i]) == "wt")] <- "Wildtype"
+  }
+  
+
+}
+
+
+```
+
+
+# Leukocyte fraction and CIBERSORT
+##Leukocyte fraction
+```{r}
+library(stringr)
+
+leuk_data <- read.csv("TCGA_all_leuk_estimate.masked.20170107.tsv", sep="\t", header=TRUE)
+
+#the data do not have column names, so i gave accordingly
+names(leuk_data) <- c("Project", "Sample", "Leukocyte")
+
+leuk_coad <- leuk_data[leuk_data$Project=="COAD",]
+
+#leukocyte fractions of patients 
+leuk_coad <- leuk_coad %>% 
+  mutate(patient = substr(Sample, 1,12)) %>% 
+  select(patient, Leukocyte)
+
+
+```
+
+##CIBERSORT
+```{r}
+ciber_data <- read.csv("TCGA.Kallisto.fullIDs.cibersort.relative.tsv", sep="\t", header=TRUE)
+
+ciber_coad <- ciber_data[ciber_data$CancerType=="COAD",]
+
+#leukocyte fractions of patients 
+ciber_coad <- ciber_coad %>% 
+  mutate(patient = substr(SampleID, 1,12)) %>% 
+  select(patient, everything())
+
+ciber_coad$patient <- gsub("[.]", "-", ciber_coad$patient)
+
+ciber_coad$CancerType <- NULL #unnecessary info
+
+#but the patient codes are separated by ".", it must be changed to "-" in order to merge
+
+```
+
+# Merging
+## RNA & miRNA
+```{r}
+#RNA and miRNA data merged by sample id
+
+merged_1c <- full_join(ct_rna, ct_mir, by = "sample_ID")
+
+#a column of patient names are generated
+merged_2c <- merged_1c %>% 
+  mutate(patient = substr(sample_ID, 1,12)) %>% 
+  select(patient, everything())
+
+```
+
+## add subtype
+```{r}
+#subtype and merged RNA&miRNA data are joined
+merged_subc <- full_join(merged_2c, coad_subtype, by="patient")
+
+```
+
+## add leukocyte fraction and CIBERSORT
+
+```{r}
+merged_leukc <- full_join(merged_subc, leuk_coad, by= "patient")
+
+merged_finalc <- full_join(merged_leukc, ciber_coad, by="patient")
+
+```
+
+
+#Cleaning merged_final from NAs 
+```{r}
+final <- merged_final
+
+final <- na.omit(final)
+
+```
+
+#Plotting
+
+##Boxplot
+### CD8A in two gender classes
+```{r}
+merged_finalc %>% 
+  filter(gender!="Not Available") %>% 
+  ggplot(aes(gender, CD8A)) +
+  geom_boxplot(na.rm=TRUE) +
+  geom_jitter(aes(colour = gender)) +
+  ggtitle("CD8A Expression by Gender") + xlab("Gender")
+
+```
+### immune signature vs FOXP3
+```{r}
+merged_finalc %>% 
+  ggplot(aes(immune_signature, FOXP3)) +
+  geom_boxplot(na.rm=TRUE) +
+  geom_jitter(aes(colour = immune_signature))+
+  xlab("Immune Signature") + ggtitle("Immune Signature vs FOXP3 Expression Plot")
+```
+
+
+## Scatterplot
+
+### hsa.mir.155.5p vs CD8A 
+```{r}
+#hsa.mir.155.5p is not found in ct_mir
+
+merged_finalc %>% 
+  ggplot(aes(hsa.mir.155, CD8A)) +
+  geom_point(na.rm=TRUE) +
+  geom_smooth(method = "lm", se=TRUE) + #straight line with confidence intervals
+  ggtitle("hsa.mir.155 vs CD8A Expression Plot")
+
+```
+### CD3E vs CD8A
+```{r}
+merged_finalc %>% 
+  ggplot(aes(CD3E, CD8A)) +
+  geom_point(na.rm=TRUE) +
+  geom_smooth(method = "lm", se=TRUE) + #straight line with confidence intervals
+  ggtitle("CD3E vs CD8A Expression Plot")
+```
+##Kaplan Meier curve
+```{r}
+#fit a survival model
+library(survival)
+
+fit = survfit(Surv(overall_survival, deceased) ~ immune_median, data=clin_immunec)
+
+
+library(survminer)
+ggsurvplot(fit, data=clin_immunec, pval=T)
+
+
+```
+
+
