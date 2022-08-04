@@ -423,4 +423,7 @@ ggsurvplot(fit, data=clin_immunec, pval=T)
 
 ```
 
-
+# Session Info
+```{r}
+sessionInfo()
+```
