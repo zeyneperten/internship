@@ -5,13 +5,24 @@ date: '2022-07-26'
 output: html_document
 ---
 
-#Download Data
+# Required packages
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(survival)
+library(survminer)
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+```
+
+# Download Data
 ## RNAseq data
 
 ```{r, eval = F}
-
-library(TCGAbiolinks)
-library(SummarizedExperiment)
 
 # Gene expression aligned against hg38
 query.crna <- GDCquery(
@@ -79,8 +90,6 @@ c_rna <- assay(coad_rna)
 ##Gene info
 ```{r}
 
-library(tidyverse)
-
 cgene_data <- as.data.frame(rowData(coad_rna))
 
 anyDuplicated(cgene_data$gene_id) #0 means, they are unique observations
@@ -131,13 +140,11 @@ dup_patients <- which(duplicated(cpatient_data$patient) | duplicated(cpatient_da
 ```
 
 
-##Normalization
+# Normalization
 
-###miRNA
+##miRNA
 ```{r}
 
-
-head(colnames(coad_mir))
 
 #select columns that contain "per million", value=T gives values
 sel_cols <- c(grep(pattern = "reads_per_million",
@@ -181,9 +188,8 @@ ct_mir <- ct_mir %>%
 
 ```
 
-###RNA normalization
+##RNA normalization
 ```{r}
-library(dplyr)
 normal_rna <- edgeR::cpm(c_rna) 
 #count per million, normalization
 
@@ -218,7 +224,7 @@ ct_rna <- ct_rna %>%
 ```
 
 
-###Survival
+# Survival
 ```{r}
 clinicalc <- cpatient_data[c("patient", "vital_status", "days_to_death", "days_to_last_follow_up")]
 
@@ -247,11 +253,11 @@ clin_immunec <- clin_immunec %>%
 ```
 
 
-#Human-readable metadata
+# Human-readable metadata
 
 ```{r, EVAL=f}
 
-#Getting rid of NA in subtype data
+#Writing "Not Available" for uniformity
 
 for (i in 1:45) {
   levels(coad_subtype[,i])[which(levels(coad_subtype[,i]) == "-")] <- "Not Available"
@@ -340,32 +346,34 @@ merged_2c <- merged_1c %>%
 
 ```
 
-## add subtype
-```{r}
-#subtype and merged RNA&miRNA data are joined
-merged_subc <- full_join(merged_2c, coad_subtype, by="patient")
-
-```
-
 ## add leukocyte fraction and CIBERSORT
 
 ```{r}
-merged_leukc <- full_join(merged_subc, leuk_coad, by= "patient")
-
-merged_finalc <- full_join(merged_leukc, ciber_coad, by="patient")
+leuk_and_ciberc <- full_join(leuk_coad, ciber_coad, by= "patient")
 
 ```
 
-
-#Cleaning merged_final from NAs 
+## add subtype
 ```{r}
-finalc <- merged_finalc
+#subtype and merged RNA&miRNA data are joined
+merged_subc <- full_join(coad_subtype, leuk_and_ciberc, by="patient")
 
-finalc <- na.omit(finalc)
+merged_finalc <- full_join(merged_2c, merged_subc, by="patient")
+
+merged_finalc$SampleID <- NULL #the sampleID data coming from CIBERSORT is unnecessary since the info is already present
+
 
 ```
 
-#Plotting
+# Cleaning merged_finalc from NAs 
+```{r}
+final <- merged_final
+
+final <- na.omit(final)
+
+```
+
+# Plotting
 
 ##Boxplot
 ### CD8A in two gender classes
@@ -412,12 +420,8 @@ merged_finalc %>%
 ##Kaplan Meier curve
 ```{r}
 #fit a survival model
-library(survival)
-
 fit = survfit(Surv(overall_survival, deceased) ~ immune_median, data=clin_immunec)
 
-
-library(survminer)
 ggsurvplot(fit, data=clin_immunec, pval=T)
 
 
@@ -427,3 +431,4 @@ ggsurvplot(fit, data=clin_immunec, pval=T)
 ```{r}
 sessionInfo()
 ```
+

@@ -8,6 +8,20 @@ output:
     toc_depth: 3
 ---
 
+# Required packages
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(survival)
+library(survminer)
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+```
+
 
 # Download data
 
@@ -16,23 +30,10 @@ output:
 
 More details on this object type can be seen [here](https://bioconductor.org/packages/devel/bioc/vignettes/SummarizedExperiment/inst/doc/SummarizedExperiment.html)
 
-library(ggplot2)
-library(tidyverse)
 
 ## RNAseq data
 
 ```{r, eval = F}
-
-## Install TCGA if you don't have it (restart session after installing)
-
-# if (!require("BiocManager", quietly = TRUE))
-#     install.packages("BiocManager")
-# 
-# BiocManager::install("TCGAbiolinks")
-
-library(TCGAbiolinks)
-library(SummarizedExperiment)
-
 # Gene expression aligned against hg38
 query <- GDCquery(
   project = "TCGA-SKCM",
@@ -46,9 +47,6 @@ GDCdownload(query = query)
 skcm_rna <- GDCprepare(query = query)
 
 saveRDS(skcm_rna, "skcm_rna.rds")
-
-colnames(colData(skcm_rna))
-table(skcm_rna@colData$vital_status)
 
 ```
 
@@ -86,10 +84,6 @@ saveRDS(skcm_subtype, "skcm_subtype.rds")
 
 # Explore data
 
-
-Familiarize yourself with the data sets
-
-- Samples are identified by barcodes. See details [here](https://docs.gdc.cancer.gov/Encyclopedia/pages/TCGA_Barcode/)
 ##RNAseq extract
 
 ```{r}
@@ -108,9 +102,6 @@ rna <- assay(skcm_rna)
 
 
 gene_data <- as.data.frame(rowData(skcm_rna))
-
-gene_data[1:10, 1:10]
-
 
 anyDuplicated(gene_data$gene_id) #0 means, they are unique observations
 
@@ -170,7 +161,7 @@ dup_patients <- which(duplicated(patient_data$patient) | duplicated(patient_data
 
 
 
-#Normalization
+# Normalization
 
 ##miRNA
 ```{r}
@@ -227,8 +218,6 @@ t_mir <- t_mir %>%
 ##RNA normalization
 ```{r}
 
-library(dplyr)
-
 norm_rna <- edgeR::cpm(rna) 
 #count per million, normalization
 
@@ -264,7 +253,7 @@ t_rna <- t_rna %>%
 
 
 
-###Survival
+# Survival
 ```{r}
 clinical <- patient_data[c("patient", "vital_status", "days_to_death", "days_to_last_follow_up")]
 
@@ -294,7 +283,7 @@ clin_immune <- clin_immune %>%
 ```
 
 
-#Human-readable metadata
+# Human-readable metadata
 
 ```{r}
 
@@ -388,25 +377,27 @@ merged_2 <- merged_id %>%
 
 ```
 
+## add leukocyte fraction and CIBERSORT
+
+```{r}
+leuk_and_ciber <- full_join(leuk_skcm, ciber_skcm, by= "patient")
+
+```
+
 ## add subtype
 ```{r}
-#subtype and merged RNA&miRNA data are joined
-merged_sub <- full_join(merged_2, skcm_subtype, by="patient")
+#subtype and leukocyte&cibersort data are joined
+merged_sub <- full_join(skcm_subtype, leuk_and_ciber, by="patient")
+
+merged_final <- full_join(merged_2, merged_sub, by="patient")
+
+merged_final$SampleID <- NULL #the sampleID data coming from CIBERSORT is unnecessary since we already have it
 
 #some patients that are present in rna&mirna data are not found in subtype. that's why it generates NAs.
 ```
 
-## add leukocyte fraction and CIBERSORT
 
-```{r}
-merged_leuk <- full_join(merged_sub, leuk_skcm, by= "patient")
-
-merged_final <- full_join(merged_leuk, ciber_skcm, by="patient")
-
-merged_final$SampleID <- NULL #the sampleID data coming from CIBERSORT is unnecessary since we already have it
-```
-
-#Cleaning merged_final from NAs 
+# Cleaning merged_final from NAs 
 ```{r}
 final <- merged_final
 
@@ -415,7 +406,7 @@ final <- na.omit(final)
 ```
 
 
-#Plotting
+# Plotting
 
 ##Boxplot
 
@@ -465,12 +456,8 @@ merged_final %>%
 ##Kaplan Meier curve
 ```{r}
 #fit a survival model
-library(survival)
-
 fit = survfit(Surv(overall_survival, deceased) ~ immune_median, data=clin_immune)
 
-
-library("survminer")
 ggsurvplot(fit, data=clin_immune, pval=T, risk.table = T)
 
 
